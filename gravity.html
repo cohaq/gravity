@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>重力落下シミュレーター（中学生向け, フェーズ1）</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #11172b;
+      --accent: #3fa9ff;
+      --text: #e6eefc;
+      --muted: #93a1b3;
+      --grid: rgba(255,255,255,.06);
+      --ground: #5b6b83;
+    }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif; }
+    .wrap { display: grid; grid-template-columns: 1fr 340px; gap: 12px; height: 100%; padding: 12px; box-sizing: border-box; }
+    canvas { width: 100%; height: 100%; background: radial-gradient(1200px 800px at 60% -20%, #1a2444 0%, var(--bg) 60%); border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,.35) inset, 0 6px 20px rgba(0,0,0,.25); }
+    .panel { background: linear-gradient(180deg, #121a33 0%, var(--panel) 100%); border:1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 14px; display:flex; flex-direction:column; gap: 10px; }
+    .row { display:grid; grid-template-columns: 1fr 90px; align-items:center; gap:8px; }
+    .row .hint { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+    label { font-size: 14px; color: var(--text); }
+    input[type="number"], select { width:100%; padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.15); background:#0f1630; color:var(--text); }
+    input[type="range"] { width: 100%; }
+    .buttons { display:flex; gap:8px; flex-wrap:wrap; }
+    button { padding:10px 12px; border-radius: 12px; border:1px solid rgba(255,255,255,.12); background:#162143; color:var(--text); cursor:pointer; font-weight:600; }
+    button.primary { background: var(--accent); color: #07131f; border: none; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .stats { font-variant-numeric: tabular-nums; background:#0e152d; border-radius:10px; padding:8px 10px; border:1px solid rgba(255,255,255,.08); }
+    .tiny { font-size: 12px; color: var(--muted); }
+    .title { font-weight: 700; font-size: 16px; letter-spacing:.2px; }
+    .sep { height:1px; background: rgba(255,255,255,.08); margin: 6px 0; }
+    .credits { margin-top:auto; }
+    a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="sim" aria-label="重力落下シミュレーション"></canvas>
+
+    <aside class="panel" aria-label="操作パネル">
+      <div class="title">重力落下（点質量＋床バウンド, 2D & 外力）</div>
+      <div class="tiny">単位：m, s, kg。積分：半陰的オイラー（安定・教育向け）。</div>
+      <!-- 外力（大きさ・時間・方向） -->
+      <div class="row"><label>力の大きさ F (N)</label><input id="Fmag" type="number" step="1" min="0" value="5"></div>
+      <div class="row"><label>力をかける時間 τ (s)</label><input id="Fdur" type="number" step="0.05" min="0" value="0.50"></div>
+      <div class="row"><label>力の方向 θ (°)</label><input id="Fangle" type="number" step="1" min="-180" max="180" value="0"></div>
+      <div class="buttons">
+        <button id="applyF">⚡ 力をかける（今すぐ）</button>
+      </div>
+      <div class="buttons">
+        <button id="toggle" class="primary">▶ 開始</button>
+        <button id="step">⏭︎ 1/60秒だけ進める</button>
+        <button id="reset">↺ リセット</button>
+        <button id="clear">🧹 トレース消去</button>
+        <button id="csv">↓ CSV保存</button>
+      </div>
+      <div class="sep"></div>
+      <div class="row"><label>質量 m (kg)</label><input id="m" type="number" step="0.1" min="0.1" value="1.0"></div>
+      <div class="row"><label>重力加速度 g (m/s²)</label><input id="g" type="number" step="0.1" min="0" value="9.8"></div>
+      <div class="row"><label>空気抵抗 k（線形, kg/s）</label><input id="k" type="number" step="0.1" min="0" value="0"></div>
+      <div class="row"><label>反発係数 e (0–1)</label><input id="e" type="number" step="0.05" min="0" max="1" value="0.80"></div>
+      <div class="row"><label>初期高さ h₀ (m)</label><input id="h0" type="number" step="0.1" min="0" value="5.0"></div>
+      <div class="row"><label>初期速度 v₀ (m/s, 上向きを＋)</label><input id="v0" type="number" step="0.1" value="0"></div>
+      <div class="row"><label>描画トレース</label>
+        <select id="trace"><option value="off" selected>オフ</option><option value="dots">点を残す</option><option value="line">軌跡ライン</option></select>
+      </div>
+      <div class="sep"></div>
+      <div class="row"><label>摩擦 μₖ</label><input id="muK" type="number" step="0.01" min="0" value="0.15"></div>
+      <div class="row"><label>坂角 θ (°)</label><input id="slopeDeg" type="number" step="1" value="20"></div>
+      <div class="row"><label>坂の長さ L (m)</label><input id="slopeLen" type="number" step="0.5" min="0.5" value="6"></div>
+      <div class="row"><label>ループ幅 W (m)</label><input id="worldW" type="number" step="1" min="6" value="20"></div>
+      <div class="row"><span class="hint">地形：平地→坂→平地。x は 0〜W でループします。</span></div>
+      <div class="row"><label>低速カット v_cut (m/s)</label><input id="vCut" type="number" step="0.05" min="0" value="0.3"></div>
+      <div class="row"><label>角損失 e_corner</label><input id="eCorner" type="number" step="0.01" min="0" max="1" value="0.85"></div>
+      <div class="row"><label>睡眠 v_sleep (m/s)</label><input id="vSleep" type="number" step="0.01" min="0" value="0.05"></div>
+      <div class="row"><label>a_sleep (m/s²)</label><input id="aSleep" type="number" step="0.01" min="0" value="0.2"></div>
+      <div class="row"><label>t_sleep (s)</label><input id="tSleep" type="number" step="0.05" min="0" value="0.5"></div>
+      <div class="sep"></div>
+      <div class="stats" id="stats"></div>
+      <div class="tiny">注：空気抵抗 0 のときは、質量に関係なく同じ加速度 g で落下。抵抗を入れると速度差や到達高度が変化します。</div>
+      <div class="credits tiny">© gravity-canvas demo | MIT License | 作：ChatGPT</div>
+    </aside>
+  </div>
+
+  <script>
+  // ======= 基本設定 =======
+  const canvas = document.getElementById('sim');
+  const ctx = canvas.getContext('2d');
+  const X_OFFSET = 60;  // 左側余白（px）
+  const RIGHT_MARGIN = 60; // 右側の描画余白（px）
+  const MODE = { AIR: 'AIR', SLIDE: 'SLIDE', SLEEP: 'SLEEP' };
+  // ワールドスケール（縦方向・横方向の実長[m]）
+  let worldH = 10;   // 表示する高さ（m）
+  let worldW = 20;   // 周期境界の幅（m）
+  function pxPerMeter() { return (canvas.height - 80) / worldH; }
+  function groundYpx() { return canvas.height - 40; }
+  function toPxY(y_m) { return groundYpx() - y_m * pxPerMeter(); } // 上向き＋
+  function toPxX(x_m) { return X_OFFSET + x_m * pxPerMeter(); }    // 右向き＋
+  function horizontalBounds() {
+    if (!Number.isFinite(worldW) || worldW <= 0) return null;
+    return { min: 0, max: worldW, span: worldW };
+  }
+  function wrapX(x) {
+    if (!Number.isFinite(worldW) || worldW <= 0) return x;
+    const L = worldW;
+    return ((x % L) + L) % L;
+  }
+  function wrapHorizontalPosition() { state.x = wrapX(state.x); }
+  function fitCanvas() {
+    const panelReserve = 360; // 操作パネル幅 + マージン目安
+    const targetH = Math.max(420, Math.floor(window.innerHeight - 24));
+    const availableW = Math.max(640, Math.floor(window.innerWidth - panelReserve));
+    const pFromHeight = (targetH - 80) / worldH;
+    const worldWidthPxBudget = Math.max(320, availableW - X_OFFSET - RIGHT_MARGIN);
+    const pFromWidth = worldWidthPxBudget / worldW;
+    const p = Math.max(10, Math.min(pFromHeight, pFromWidth));
+    const newHeight = Math.floor(p * worldH + 80);
+    const newWidth = Math.floor(p * worldW + X_OFFSET + RIGHT_MARGIN);
+    canvas.height = newHeight;
+    canvas.width = newWidth;
+    canvas.style.height = `${newHeight}px`;
+    canvas.style.width = `${newWidth}px`;
+  }
+  window.addEventListener('resize', ()=>{ fitCanvas(); rebuildTerrain(); draw(); });
+  fitCanvas();
+
+  let terrainSegments = [];
+
+  // ======= 地形ユーティリティ =======
+  function makeSlopeSegment(x0, length, slope, yAtX0, id) {
+    const x1 = x0 + length;
+    const a = slope;
+    const b = yAtX0 - a * x0;
+    const denom = Math.hypot(1, a);
+    const tx = 1 / denom;
+    const ty = a / denom;
+    const nx = -a / denom;
+    const ny = 1 / denom;
+    return {
+      id,
+      x0,
+      x1,
+      a,
+      b,
+      theta: Math.atan(a),
+      t: { x: tx, y: ty },
+      n: { x: nx, y: ny },
+      yAt(x) { return a * x + b; }
+    };
+  }
+  function rebuildTerrain() {
+    terrainSegments.length = 0;
+    const slopeAngleRad = (state ? state.slopeAngle : 20) * Math.PI / 180;
+    const slopeLen = Math.max(0.5, state ? state.slopeLength : 6);
+    const baseWorldW = state ? state.worldW : worldW;
+    const minWorldW = slopeLen + 4; // 坂の両側に最低 2m ずつ平地
+    worldW = Math.max(minWorldW, baseWorldW);
+    const flatSpan = worldW - slopeLen;
+    const flatBefore = Math.max(1, flatSpan * 0.5);
+    let cursor = 0;
+    // 平地（左）
+    terrainSegments.push(makeSlopeSegment(cursor, flatBefore, 0, 0, 0));
+    cursor += flatBefore;
+    // 坂
+    const slope = Math.tan(slopeAngleRad);
+    const yAtSlopeStart = terrainSegments[terrainSegments.length - 1].yAt(cursor);
+    terrainSegments.push(makeSlopeSegment(cursor, slopeLen, slope, yAtSlopeStart, 1));
+    cursor += slopeLen;
+    // 平地（右）
+    const yAtSlopeEnd = terrainSegments[terrainSegments.length - 1].yAt(cursor);
+    const rightLen = Math.max(1, worldW - cursor);
+    terrainSegments.push(makeSlopeSegment(cursor, rightLen, 0, yAtSlopeEnd, 2));
+    // worldW を最終セグメント終端に合わせる
+    worldW = terrainSegments[terrainSegments.length - 1].x1;
+    if (typeof state !== 'undefined' && state) {
+      state.worldW = worldW;
+      wrapHorizontalPosition();
+    }
+  }
+  function sampleSurface(x) {
+    if (!terrainSegments.length) return null;
+    const xm = wrapX(x);
+    let seg = null;
+    for (let i = 0; i < terrainSegments.length; i++) {
+      const s = terrainSegments[i];
+      if (xm >= s.x0 && (i === terrainSegments.length - 1 ? xm <= s.x1 + 1e-6 : xm < s.x1 - 1e-6)) {
+        seg = s;
+        break;
+      }
+    }
+    if (!seg) seg = terrainSegments[terrainSegments.length - 1];
+    const y = seg.yAt ? seg.yAt(xm) : seg.a * xm + seg.b;
+    return { x: xm, y, segment: seg, t: seg.t, n: seg.n, theta: seg.theta };
+  }
+  function snapToSurface() {
+    const surf = sampleSurface(state.x);
+    if (surf) state.y = surf.y;
+  }
+
+  // 状態
+  const state = {
+    m: 1.0,  // kg
+    g: 9.8,  // m/s^2 (下向きを正の値として使い、式では -g)
+    k: 0.0,  // 線形抵抗係数 kg/s
+    e: 0.8,  // 反発係数
+    x: 0.5,  // m（右向き＋）
+    y: 5.0,  // m（床からの高さ, 上向き＋）
+    vx: 0.0, // m/s（右向きを＋）
+    vy: 0.0, // m/s（上向きを＋）
+    r: 0.15, // m（描画用の見た目半径）
+    t: 0.0,
+    running: false,
+    traces: [], // {t, x, y, vx, vy}
+    // 外力
+    _Fx: 0.0,
+    _Fy: 0.0,
+    Ft: 0.0,
+    // 拡張物理
+    mode: MODE.AIR,
+    currentSegmentId: null,
+    vt: 0.0,
+    sleepTimer: 0.0,
+    mu_k: 0.15,
+    slopeAngle: 20,
+    slopeLength: 6,
+    worldW: 20,
+    v_cut: 0.3,
+    e_corner: 0.85,
+    v_sleep: 0.05,
+    a_sleep: 0.2,
+    t_sleep: 0.5
+  };
+  wrapHorizontalPosition();
+  worldW = state.worldW;
+  fitCanvas();
+  rebuildTerrain();
+
+  // UI 要素
+  const $ = (id)=>document.getElementById(id);
+  const mIn = $('m'), gIn = $('g'), kIn = $('k'), eIn = $('e'), h0In = $('h0'), v0In = $('v0'), traceSel = $('trace'),
+        muKIn = $('muK'), slopeDegIn = $('slopeDeg'), slopeLenIn = $('slopeLen'), worldWIn = $('worldW'),
+        vCutIn = $('vCut'), eCornerIn = $('eCorner'), vSleepIn = $('vSleep'), aSleepIn = $('aSleep'), tSleepIn = $('tSleep'),
+        FmagIn = $('Fmag'), FdurIn = $('Fdur'), FangleIn = $('Fangle');
+  const toggleBtn = $('toggle'), resetBtn = $('reset'), stepBtn = $('step'), clearBtn = $('clear'), csvBtn = $('csv'), applyFBtn = $('applyF');
+  const statsEl = $('stats');
+
+  function applyInputs() {
+    const parseOr = (el, fallback) => {
+      const v = parseFloat(el.value);
+      return Number.isFinite(v) ? v : fallback;
+    };
+    state.m        = Math.max(0.01, parseOr(mIn, state.m));
+    state.g        = Math.max(0, parseOr(gIn, state.g));
+    state.k        = Math.max(0, parseOr(kIn, state.k));
+    state.e        = Math.min(1, Math.max(0, parseOr(eIn, state.e)));
+    state.mu_k     = Math.max(0, parseOr(muKIn, state.mu_k));
+    state.slopeAngle  = Math.max(-80, Math.min(80, parseOr(slopeDegIn, state.slopeAngle)));
+    state.slopeLength = Math.max(0.5, parseOr(slopeLenIn, state.slopeLength));
+    state.worldW      = Math.max(state.slopeLength + 4, parseOr(worldWIn, state.worldW));
+    state.v_cut    = Math.max(0, parseOr(vCutIn, state.v_cut));
+    state.e_corner = Math.min(1, Math.max(0, parseOr(eCornerIn, state.e_corner)));
+    state.v_sleep  = Math.max(0, parseOr(vSleepIn, state.v_sleep));
+    state.a_sleep  = Math.max(0, parseOr(aSleepIn, state.a_sleep));
+    state.t_sleep  = Math.max(0, parseOr(tSleepIn, state.t_sleep));
+    const syncNumeric = (el, value) => { if (el) el.value = String(Number.isFinite(value) ? value : 0); };
+    syncNumeric(muKIn, state.mu_k);
+    syncNumeric(slopeDegIn, state.slopeAngle);
+    syncNumeric(slopeLenIn, state.slopeLength);
+    syncNumeric(worldWIn, state.worldW);
+    syncNumeric(vCutIn, state.v_cut);
+    syncNumeric(eCornerIn, state.e_corner);
+    syncNumeric(vSleepIn, state.v_sleep);
+    syncNumeric(aSleepIn, state.a_sleep);
+    syncNumeric(tSleepIn, state.t_sleep);
+    worldW = state.worldW;
+    rebuildTerrain();
+    fitCanvas();
+    const surf = sampleSurface(state.x);
+    if (surf && state.y < surf.y) state.y = surf.y;
+    draw();
+  }
+  [mIn,gIn,kIn,eIn,muKIn,slopeDegIn,slopeLenIn,worldWIn,vCutIn,eCornerIn,vSleepIn,aSleepIn,tSleepIn]
+    .forEach(inp=>inp.addEventListener('change', applyInputs));
+
+  function resetSim() {
+    applyInputs();
+    state.x  = 0.5;
+    state.y  = Math.max(0, parseFloat(h0In.value));
+    state.vx = 0.0;
+    state.vy = parseFloat(v0In.value);
+    state.t  = 0;
+    state._Fx = 0.0; state._Fy = 0.0; state.Ft = 0.0;
+    wrapHorizontalPosition();
+    state.mode = MODE.AIR;
+    state.currentSegmentId = null;
+    state.vt = 0.0;
+    state.sleepTimer = 0.0;
+    state.traces.length = 0;
+    const surf = sampleSurface(state.x);
+    if (surf && state.y < surf.y) state.y = surf.y;
+  }
+  resetBtn.addEventListener('click', resetSim);
+  clearBtn.addEventListener('click', ()=> state.traces.length = 0);
+
+  toggleBtn.addEventListener('click', ()=>{
+    state.running = !state.running;
+    toggleBtn.textContent = state.running ? '⏸ 一時停止' : '▶ 再開';
+    toggleBtn.classList.toggle('primary', !state.running);
+  });
+
+  stepBtn.addEventListener('click', ()=>{ stepPhysics(1/60); draw(); });
+
+  // 外力を適用（一定力を τ 秒間）
+  applyFBtn.addEventListener('click', ()=>{
+    const F = Math.max(0, parseFloat(FmagIn.value)||0);
+    const dur = Math.max(0, parseFloat(FdurIn.value)||0);
+    const th = parseFloat(FangleIn.value)||0; // 度
+    const rad = th * Math.PI/180;
+    state._Fx = F * Math.cos(rad);
+    state._Fy = F * Math.sin(rad);
+    state.Ft  = dur;
+  });
+
+  // ======= 物理（半陰的オイラー, 2D, 線形抵抗 + 外力）=======
+  // 方向：右・上を正。重力は y 方向に -g。抵抗は -k * v。
+  function stepPhysics(dt) {
+    const { m, g, k } = state;
+
+    // 外力（一定）
+    let Fx = 0, Fy = 0;
+    if (state.Ft > 0) {
+      Fx = state._Fx;
+      Fy = state._Fy;
+      state.Ft = Math.max(0, state.Ft - dt);
+      if (state.Ft === 0) {
+        state._Fx = 0;
+        state._Fy = 0;
+      }
+    }
+    const Fext = { x: Fx, y: Fy };
+
+    function computeNormalForce(surface) {
+      if (!surface) return 0;
+      const n = surface.n;
+      const Fn = Fext.x * n.x + Fext.y * n.y;
+      return m * g * n.y - Fn;
+    }
+
+    if (state.mode === MODE.AIR) {
+      state.vt = 0;
+      const ax = (Fext.x - k * state.vx) / m;
+      const ay = (-m * g + Fext.y - k * state.vy) / m;
+
+      state.vx += ax * dt;
+      state.vy += ay * dt;
+      state.x += state.vx * dt;
+      state.y += state.vy * dt;
+      state.x = wrapX(state.x);
+
+      const surf = sampleSurface(state.x);
+      if (surf && state.y <= surf.y) {
+        const t = surf.t;
+        const n = surf.n;
+        const vn = state.vx * n.x + state.vy * n.y;
+        const e_eff = Math.abs(vn) >= state.v_cut ? state.e : 0;
+        const correction = (1 + e_eff) * vn;
+        const vxAfter = state.vx - correction * n.x;
+        const vyAfter = state.vy - correction * n.y;
+        const vtAfter = vxAfter * t.x + vyAfter * t.y;
+        const vnAfter = vxAfter * n.x + vyAfter * n.y;
+        const slideThreshold = 0.02;
+        const shouldSlide = e_eff === 0 || Math.abs(vtAfter) > slideThreshold || Math.abs(vnAfter) < 1e-5;
+        if (shouldSlide) {
+          state.vx = vtAfter * t.x;
+          state.vy = vtAfter * t.y;
+          state.vt = vtAfter;
+          state.y = surf.y;
+          state.mode = MODE.SLIDE;
+          state.currentSegmentId = surf.segment.id;
+        } else {
+          state.vx = vxAfter;
+          state.vy = vyAfter;
+          state.vt = 0;
+          state.mode = MODE.AIR;
+          state.y = surf.y + n.y * 1e-4;
+        }
+        state.sleepTimer = 0;
+      }
+    } else if (state.mode === MODE.SLIDE) {
+      let surf = sampleSurface(state.x);
+      if (!surf) {
+        state.mode = MODE.AIR;
+      } else {
+        state.currentSegmentId = surf.segment.id;
+        const t = surf.t;
+        const n = surf.n;
+        let vt = state.vt;
+        const Ft = Fext.x * t.x + Fext.y * t.y;
+        const N = computeNormalForce(surf);
+        if (N <= 0) {
+          state.mode = MODE.AIR;
+        } else {
+          const frictionAcc = Math.abs(vt) > 1e-4 ? (state.mu_k * N / m) * Math.sign(vt) : 0;
+          const a_t = (Ft - k * vt) / m - g * t.y - frictionAcc;
+          vt += a_t * dt;
+          state.vt = vt;
+          state.vx = vt * t.x;
+          state.vy = vt * t.y;
+          state.x = wrapX(state.x + state.vx * dt);
+          const nextSurf = sampleSurface(state.x);
+          if (nextSurf) {
+            if (nextSurf.segment.id !== surf.segment.id) {
+              const t2 = nextSurf.t;
+              const proj = state.vx * t2.x + state.vy * t2.y;
+              const vtCorner = proj * state.e_corner;
+              state.vt = vtCorner;
+              state.vx = vtCorner * t2.x;
+              state.vy = vtCorner * t2.y;
+            }
+            state.y = nextSurf.y;
+            state.currentSegmentId = nextSurf.segment.id;
+            surf = nextSurf;
+          }
+
+          const Ncheck = computeNormalForce(surf);
+          if (Ncheck <= 0) {
+            state.mode = MODE.AIR;
+            state.currentSegmentId = null;
+            state.sleepTimer = 0;
+            state.y = surf ? surf.y + 0.01 : state.y;
+          } else {
+            if (Math.abs(state.vt) < state.v_sleep && Math.abs(a_t) < state.a_sleep) {
+              state.sleepTimer += dt;
+              if (state.sleepTimer >= state.t_sleep) {
+                state.mode = MODE.SLEEP;
+                state.vt = 0;
+                state.vx = 0;
+                state.vy = 0;
+              }
+            } else {
+              state.sleepTimer = 0;
+            }
+          }
+        }
+      }
+    } else if (state.mode === MODE.SLEEP) {
+      const surf = sampleSurface(state.x);
+      if (!surf) {
+        state.mode = MODE.AIR;
+      } else {
+        state.x = wrapX(state.x);
+        state.y = surf.y;
+        state.vx = 0;
+        state.vy = 0;
+        state.vt = 0;
+        const N = computeNormalForce(surf);
+        const t = surf.t;
+        const drive = (Fext.x * t.x + Fext.y * t.y) / m - g * t.y;
+        if (N <= 0 || Math.abs(drive) > state.a_sleep) {
+          state.mode = MODE.SLIDE;
+          state.sleepTimer = 0;
+          state.currentSegmentId = surf.segment.id;
+        }
+      }
+    }
+
+    state.t += dt;
+
+    if (!state._acc) state._acc = 0;
+    state._acc += dt;
+    if (state._acc >= 0.02) {
+      state.traces.push({ t: state.t, x: state.x, y: state.y, vx: state.vx, vy: state.vy, vt: state.vt, mode: state.mode });
+      state._acc = 0;
+      if (state.traces.length > 6000) state.traces.shift();
+    }
+  }
+
+  // ======= 描画 =======
+  function drawGrid() {
+    const p = pxPerMeter();
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,.06)';
+    ctx.lineWidth = 1;
+    // 水平 1m グリッド
+    for (let y = groundYpx(); y > 40; y -= p) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+    }
+    // 垂直 1m グリッド（目安）
+    const maxX = Math.ceil(worldW);
+    for (let xi = 0; xi <= maxX; xi++) {
+      if (xi - worldW > 1e-6) break;
+      const px = toPxX(xi);
+      ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, canvas.height); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawGround() {
+    if (!terrainSegments.length) return;
+    const bottom = canvas.height;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,.06)';
+    ctx.strokeStyle = 'rgba(255,255,255,.18)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const firstSeg = terrainSegments[0];
+    const startX = toPxX(firstSeg.x0);
+    ctx.moveTo(startX, bottom);
+    ctx.lineTo(startX, toPxY(firstSeg.yAt(firstSeg.x0)));
+    for (const seg of terrainSegments) {
+      const px1 = toPxX(seg.x1);
+      const py1 = toPxY(seg.yAt(seg.x1));
+      ctx.lineTo(px1, py1);
+    }
+    const endSeg = terrainSegments[terrainSegments.length - 1];
+    const endX = toPxX(endSeg.x1);
+    ctx.lineTo(endX, bottom);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(toPxX(firstSeg.x0), toPxY(firstSeg.yAt(firstSeg.x0)));
+    for (const seg of terrainSegments) {
+      ctx.lineTo(toPxX(seg.x1), toPxY(seg.yAt(seg.x1)));
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  function drawBall() {
+    const p = pxPerMeter();
+    const x = toPxX(state.x);
+    const y = toPxY(state.y);
+    const r = Math.max(6, state.r * p);
+
+    // ベクトル矢印描画ヘルパ
+    function drawArrow(x0,y0, dx,dy, scale, color) {
+      const L = Math.hypot(dx,dy);
+      if (L < 1e-6) return;
+      const sx = dx * scale, sy = -dy * scale; // yは上向き＋
+      const x1 = x0 + sx, y1 = y0 + sy;
+      const ang = Math.atan2(y1 - y0, x1 - x0);
+      ctx.save();
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+      const ah = 8;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x1 - ah*Math.cos(ang - Math.PI/6), y1 - ah*Math.sin(ang - Math.PI/6));
+      ctx.lineTo(x1 - ah*Math.cos(ang + Math.PI/6), y1 - ah*Math.sin(ang + Math.PI/6));
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+
+    // 速度ベクトル（青）
+    drawArrow(x, y, state.vx, state.vy, 0.12 * p, 'rgba(63,169,255,.9)');
+    // 外力ベクトル（黄：適用中のみ）
+    if (state.Ft > 0) drawArrow(x, y, state._Fx, state._Fy, 0.02 * p, 'rgba(255,220,90,.95)');
+
+    // --- 蛍光グリーンの発光表現（境界ぼかし＋にじみ揺らぎ）---
+    const flicker = 1 + 0.08 * Math.sin(state.t * 6.5) + 0.04 * Math.sin(state.t * 11.3 + 1.7);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    let R1 = r * (1.55 * flicker);
+    let g1 = ctx.createRadialGradient(x, y, r * 0.15, x, y, R1);
+    g1.addColorStop(0.0, 'rgba(120, 255, 120, 0.25)');
+    g1.addColorStop(0.7, 'rgba(0, 255, 128, 0.10)');
+    g1.addColorStop(1.0, 'rgba(0, 255, 128, 0.0)');
+    ctx.filter = 'blur(8px)';
+    ctx.fillStyle = g1; ctx.beginPath(); ctx.arc(x, y, R1, 0, Math.PI * 2); ctx.fill();
+
+    let R2 = r * (1.25 * flicker);
+    let g2 = ctx.createRadialGradient(x, y, r * 0.1, x, y, R2);
+    g2.addColorStop(0.0, 'rgba(170, 255, 140, 0.35)');
+    g2.addColorStop(0.8, 'rgba(0, 255, 128, 0.08)');
+    g2.addColorStop(1.0, 'rgba(0, 255, 128, 0.0)');
+    ctx.filter = 'blur(4px)';
+    ctx.fillStyle = g2; ctx.beginPath(); ctx.arc(x, y, R2, 0, Math.PI * 2); ctx.fill();
+
+    ctx.filter = 'none';
+    const core = ctx.createRadialGradient(x - r * 0.28, y - r * 0.30, r * 0.18, x, y, r * 1.03);
+    core.addColorStop(0.0, '#e9ffe0');
+    core.addColorStop(0.35, '#bafe6a');
+    core.addColorStop(0.7, 'rgba(0,255,128,0.95)');
+    core.addColorStop(1.0, 'rgba(0,255,128,0.0)');
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(x, y, r * 1.03, 0, Math.PI * 2); ctx.fill();
+
+    // 軌跡
+    const mode = traceSel.value;
+    if (mode !== 'off') {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(200,255,210,.55)';
+      ctx.fillStyle   = 'rgba(200,255,210,.55)';
+      ctx.lineWidth = 1.5;
+      let prev = null;
+      const hBounds = horizontalBounds();
+      const halfSpan = hBounds ? hBounds.span / 2 : null;
+      for (const s of state.traces) {
+        const xx = toPxX(s.x), yy = toPxY(s.y);
+        if (mode === 'dots') {
+          ctx.beginPath(); ctx.arc(xx, yy, 1.6, 0, Math.PI*2); ctx.fill();
+        } else if (mode === 'line') {
+          if (!prev) { prev = {px: xx, py: yy, worldX: s.x}; continue; }
+          if (halfSpan && Math.abs(s.x - prev.worldX) > halfSpan) {
+            prev = {px: xx, py: yy, worldX: s.x};
+            continue;
+          }
+          ctx.beginPath(); ctx.moveTo(prev.px, prev.py); ctx.lineTo(xx, yy); ctx.stroke();
+          prev = {px: xx, py: yy, worldX: s.x};
+        }
+      }
+      ctx.restore();
+    }
+  }
+  function drawHUD() {
+    const Fg = state.m * state.g;             // |重力|（N）
+    const vmag = Math.hypot(state.vx, state.vy);
+    const Fd = state.k * vmag;                 // 抵抗の大きさ ~ k|v|
+    const FxNow = (state.Ft>0?state._Fx:0), FyNow = (state.Ft>0?state._Fy:0);
+    const Fmag = Math.hypot(FxNow, FyNow);
+    const theta = Fmag>0 ? Math.atan2(FyNow, FxNow) * 180/Math.PI : 0;
+    const a_now = {
+      x: (-state.k*state.vx + FxNow) / state.m,
+      y: (-state.g - (state.k*state.vy)/state.m + (FyNow/state.m))
+    };
+    statsEl.innerHTML = `
+      mode = ${state.mode}<br>
+      t = ${state.t.toFixed(2)} s<br>
+      x = ${state.x.toFixed(3)} m　y = ${state.y.toFixed(3)} m<br>
+      vx = ${state.vx.toFixed(3)} m/s　vy = ${state.vy.toFixed(3)} m/s　vt = ${state.vt.toFixed(3)} m/s<br>
+      |Fg| = ${Fg.toFixed(2)} N　抵抗 ~ k|v| = ${Fd.toFixed(2)} N<br>
+      Fext = ${Fmag.toFixed(2)} N（θ=${theta.toFixed(0)}°） 残り ${state.Ft.toFixed(2)} s<br>
+      a = (${a_now.x.toFixed(3)}, ${a_now.y.toFixed(3)}) m/s²（右＋, 上＋）`;
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+    drawGrid();
+    drawGround();
+    drawBall();
+    drawHUD();
+  }
+
+  // ======= ループ =======
+  let last = performance.now();
+  function loop(now) {
+    const targetDt = 1/60;
+    let dt = Math.min(0.04, (now - last) / 1000);
+    last = now;
+    if (state.running) {
+      // サブステップで安定化
+      while (dt > 0) {
+        const step = Math.min(targetDt, dt);
+        stepPhysics(step);
+        dt -= step;
+      }
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // 初期化
+  resetSim();
+
+  // ======= CSV 保存 =======
+  csvBtn.addEventListener('click', ()=>{
+    const rows = [['t(s)','x(m)','y(m)','vx(m/s)','vy(m/s)','vt(m/s)','mode']]
+      .concat(state.traces.map(s=>[
+        s.t.toFixed(3),
+        s.x.toFixed(4),
+        s.y.toFixed(4),
+        s.vx.toFixed(4),
+        s.vy.toFixed(4),
+        (s.vt ?? 0).toFixed(4),
+        s.mode || ''
+      ]));
+    const csv = rows.map(r=>r.join(',')).join('\\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'motion_trace.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+  </script>
+</body>
+</html>
